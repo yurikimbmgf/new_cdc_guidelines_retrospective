@@ -17,6 +17,9 @@ library(here)
 library(lubridate)
 library(httr) # api 
 library(jsonlite) # api
+library(ggthemes)
+library(scales)
+library(ggrepel)
 
 # Data --------------------------------------------------------------------
 cases_raw <- read_csv(here("data", "skcph-covid-cases.csv"))
@@ -99,7 +102,9 @@ guidelines_everything <- cases %>%
                                 str_detect(high_both, "medium") ~ "medium",
                                 str_detect(high_both, "low") ~ "low")) %>% 
   mutate(new_cdc_guideline = case_when(cases_under_200 == 1 ~ final_low,
-                                       cases_under_200 == 0 ~ final_high))
+                                       cases_under_200 == 0 ~ final_high)) %>% 
+  # making rating a factor
+  mutate(new_cdc_guideline = factor(new_cdc_guideline, levels = c("low", "medium", "high")))
 
 
 # only keeping the data needed for the visuals
@@ -110,7 +115,33 @@ guidelines_clean <- guidelines_everything %>%
          bed_occupancy,
          vaccinated_percent,
          booster_percent,
-         new_cdc_guideline)
+         new_cdc_guideline) 
+
+# adding label text
+# Start of "Medium" (Delta) Rating, Peak Omicron, Start of "Low" Rating (Omicron)
+# 2021-08-27; 2022-01-10; 2022-02-21
+guidlines_labels <- guidelines_clean %>% 
+  filter(date %in% c(ymd("2021-08-27"), ymd("2022-01-02"), ymd("2022-02-21"))) %>% 
+  mutate(booster_percent = case_when(is.na(booster_percent) ~ "0", 
+                                      TRUE ~ booster_percent)) %>% 
+  add_column(title = c("Start of \"Medium\" Rating (Delta)", "Start of \"High\" Rating (Omicron)", "Start of \"Low\" Rating (Omicron)")) %>% 
+  mutate(label = paste0(title, "\n",
+                        "% Fully Vaccinated: ", vaccinated_percent, "%\n",
+                        "% Boosted: ", booster_percent, "%")) %>%
+  # Adjusting spacing
+  mutate(date = case_when(title == "Start of \"High\" Rating (Omicron)" ~ date - 140,
+                          title == "Start of \"Low\" Rating (Omicron)" ~ date + 7,
+                          TRUE ~ date-30)) %>% 
+  mutate(cases_100k_7_day = case_when(title == "Start of \"Medium\" Rating (Delta)" ~ cases_100k_7_day + 150,
+                          title == "Start of \"Low\" Rating (Omicron)" ~ cases_100k_7_day + 200,
+                          TRUE ~ cases_100k_7_day)) 
+
+# Adding labels for tranmissions 
+guideline_transmission <- data.frame(
+  date = c(ymd("2022-07-30", "2022-07-30", "2022-07-30", "2022-07-30", "2022-07-30")),
+  cases_100k_7_day = c(-10, 35, 80, 125, 170),
+  transmission_label = c("Low", "Moderate", "Substantial", "High", "CDC Transmission\nGuidelines:")
+)
 
 # reshaping for vaccine visual
 guidelines_vaccine <- guidelines_everything %>% 
@@ -121,7 +152,11 @@ guidelines_vaccine <- guidelines_everything %>%
   pivot_longer(two_doses:booster, names_to = "vaccine_type", values_to = "vaccination_percent") %>% 
   mutate(vaccination_percent = as.numeric(vaccination_percent))
 
-# ggplot ------------------------------------------------------------------
+# testing ggplot ------------------------------------------------------------------
+
+# https://stackoverflow.com/questions/19736537/how-do-i-set-the-color-of-a-single-line-using-ggplot
+# Making the line multi-colored
+
 # Cases by CDC Guideline
 ggplot(guidelines_clean, aes(x = date, y = cases_100k_7_day)) +
   geom_line() + 
@@ -135,3 +170,57 @@ ggplot(guidelines_clean, aes(x = date, y = cases_100k_7_day)) +
 # Vaccine by CDC Guideline
 ggplot(guidelines_vaccine, aes(x = date, y = vaccination_percent, color = new_cdc_guideline, group = vaccine_type)) +
   geom_line()
+
+# multi-colored lines
+cdc_colors <- c("low" = "#00cc99", "medium" = "#ebc000", "high" = "#fc8d59")
+ggplot(guidelines_clean %>% mutate(county = "King County"), aes(x=date, y=cases_100k_7_day, colour=new_cdc_guideline)) +
+  geom_line(aes(group=county), size=1.2) +
+  # geom_point(size=2.8) +
+  scale_colour_manual(values = cdc_colors)
+
+
+# Cleaned Up Visual -------------------------------------------------------
+cdc_colors <- c("low" = "#00cc99", "medium" = "#ebc000", "high" = "#fc8d59")
+
+ggplot(guidelines_clean %>% mutate(county = "King County"), aes(x=date, y=cases_100k_7_day, colour=new_cdc_guideline)) +
+  # CDC Tranmission Ratings
+  geom_hline(yintercept=10) + # Low
+  geom_hline(yintercept=50) + # Moderate
+  geom_hline(yintercept=100) + # Substantial; higher is High
+  # CDC Transmission Labels
+  geom_text(data = guideline_transmission, aes(x = date, y = cases_100k_7_day, label = transmission_label), color = "black", size = 1, hjust = 1) +
+  geom_line(aes(group=county), size=0.5) +
+  # Label
+  geom_label(data = guidlines_labels, aes(x = date, y = cases_100k_7_day, label = label), color = "black", size = 1.5, hjust = 0) +
+  # scale_colour_manual(values = cdc_colors) +
+  theme_fivethirtyeight() + # 538 Theme
+  # Adding Labels / Cleaning Labels
+  theme(title = element_text(size = 5),
+        plot.caption = element_text(size = 3),
+        axis.title.y = element_text(size = 5),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 5),
+        axis.text.y = element_text(size = 5),
+        legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        plot.margin = margin(t = 6, r = 6, b = 2, l = 6),
+        legend.margin = margin(t = 0, r = 0, b = 0, l = 0))+ 
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  scale_colour_manual(name="CDC Community-Level Guideline Rating",
+                       breaks=c("low","medium","high"),
+                       labels=c("Low","Medium","High"),
+                       values = cdc_colors) +
+  labs(title="Retrospective Application of CDC's New COVID-19\nCommunity-Level Guidelines for King County, WA",
+       y ="7-day COVID-19 Cases Per 100k",
+       subtitle = "Horizontal lines represent the CDC 'Community Transmission Levels'",
+       caption ="Data Sources:\n Case rates, hospitalizations, and hospital bed utilization from Seattle King County Public Health;\nVaccination rate from CDC;") +
+  # Cleaning the Community Transmission lines
+  coord_cartesian(xlim = c(ymd("2021-07-01"), ymd("2022-07-16")),
+                  ylim = c(0, 2000))
+
+
+ggsave(here("output", "retrospective_cdc_guidelines.png"), width = 3.5, height = 5.5, units = "in")
+
+# add community tranmission lines
+
+# https://ggplot2.tidyverse.org/reference/scale_date.html
